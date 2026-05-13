@@ -1,51 +1,43 @@
-name: Build GhostWatcher Executable
+name: Build GhostWatcher
 
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch: # Allows you to run it manually
+  workflow_dispatch:
 
 jobs:
-  build-macos:
+  build:
     runs-on: macos-latest
+    permissions:
+      contents: write # Needed to delete/create releases
 
     steps:
-    - name: Checkout Repository
+    - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Compile GhostWatcher
-      run: |
-        # Compile for Intel x64 (Roblox on Mac runs via Rosetta or native Intel)
-        clang++ -std=c++17 -Wall -arch x86_64 -o GhostWatcher watcher.cpp
-        
-    - name: Create Entitlements File
+    - name: Compile
+      run: clang++ -std=c++17 -Wall -arch x86_64 -o GhostWatcher watcher.cpp
+
+    - name: Sign
       run: |
         cat <<EOF > entitlements.plist
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0">
-        <dict>
-            <key>com.apple.security.get-task-allow</key>
-            <true/>
-        </dict>
-        </plist>
+        <plist version="1.0"><dict><key>com.apple.security.get-task-allow</key><true/></dict></plist>
         EOF
-
-    - name: Ad-Hoc Sign Executable
-      run: |
-        # This allows the binary to use task_for_pid on your Mac
         codesign --entitlements entitlements.plist --force -s - GhostWatcher
 
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: GhostWatcher-Binary
-        path: GhostWatcher
+    - name: Delete Old Release
+      run: |
+        gh release delete latest --cleanup-tag -y || true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Create Release
-      if: startsWith(github.ref, 'refs/tags/')
+    - name: Push New Release
       uses: softprops/action-gh-release@v2
       with:
+        tag_name: latest
+        name: Latest GhostWatcher Build
         files: GhostWatcher
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
