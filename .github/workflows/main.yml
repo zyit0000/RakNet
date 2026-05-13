@@ -1,0 +1,37 @@
+name: Build GhostDesync (Intel x86_64)
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Compile Dylib (Intel x86_64)
+        run: |
+          clang++ -std=c++17 -Wall -arch x86_64 -dynamiclib -fPIC \
+          -framework Foundation \
+          -o GhostDesync.dylib main.cpp
+          codesign --remove-signature GhostDesync.dylib 
+
+      - name: Upload Rolling Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: latest
+          name: "Latest GhostDesync Build"
+          body: |
+            Automated rolling release for ZYiT0.
+            Architecture: Intel x86_64 
+            Offsets Version: version-9e55b34566734c3b
+          files: GhostDesync.dylib
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
