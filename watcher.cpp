@@ -5,6 +5,7 @@
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
 #include <mach-o/dyld_images.h>
+#include <algorithm>
 
 namespace Offsets {
     inline constexpr uintptr_t TaskScheduler = 0x106522280; 
@@ -29,9 +30,36 @@ bool ReadString(mach_port_t task, uintptr_t addr, char* buffer, size_t maxLen) {
     return (mach_vm_read_overwrite(task, (mach_vm_address_t)addr, maxLen, (mach_vm_address_t)buffer, &size) == KERN_SUCCESS);
 }
 
+// BROADER PID SEARCH
+pid_t GetPid() {
+    int nPids = proc_listpids(PROC_ALL_PIDS, 0, NULL, 0);
+    std::vector<pid_t> pids(nPids);
+    proc_listpids(PROC_ALL_PIDS, 0, pids.data(), nPids * sizeof(pid_t));
+    
+    for (auto pid : pids) {
+        if (pid <= 0) continue;
+        char path[PROC_PIDPATHINFO_MAXSIZE];
+        if (proc_pidpath(pid, path, sizeof(path)) > 0) {
+            std::string procPath(path);
+            // Convert to lowercase for case-insensitive matching
+            std::transform(procPath.begin(), procPath.end(), procPath.begin(), ::tolower);
+            
+            // Look for any variation of Roblox
+            if (procPath.find("robloxplayer") != std::string::npos || 
+                (procPath.find("roblox") != std::string::npos && procPath.find("app") != std::string::npos)) {
+                return pid;
+            }
+        }
+    }
+    return -1;
+}
+
 void DumpJobs(mach_port_t task, uintptr_t base) {
     uintptr_t scheduler = RPM<uintptr_t>(task, base + Offsets::TaskScheduler);
-    if (!scheduler) return;
+    if (!scheduler) {
+        std::cout << "[!] TaskScheduler static address failed. Scanning memory near base..." << std::endl;
+        return;
+    }
 
     uintptr_t v2 = RPM<uintptr_t>(task, scheduler + Offsets::JobStart);
     uintptr_t i  = RPM<uintptr_t>(task, scheduler + Offsets::JobEnd);
@@ -51,27 +79,20 @@ void DumpJobs(mach_port_t task, uintptr_t base) {
     }
 }
 
-pid_t GetPid() {
-    int nPids = proc_listpids(PROC_ALL_PIDS, 0, NULL, 0);
-    std::vector<pid_t> pids(nPids);
-    proc_listpids(PROC_ALL_PIDS, 0, pids.data(), nPids * sizeof(pid_t));
-    for (auto pid : pids) {
-        if (pid == 0) continue;
-        char path[PROC_PIDPATHINFO_MAXSIZE];
-        proc_pidpath(pid, path, sizeof(path));
-        if (strstr(path, "RobloxPlayer")) return pid;
-    }
-    return -1;
-}
-
 int main() {
-    std::cout << "[*] Ghost Watcher v2.1 (Intel x64)" << std::endl;
+    std::cout << "[*] Ghost Watcher v2.2 (Aggressive Search)" << std::endl;
+    std::cout << "[*] Searching for any Roblox-related process..." << std::endl;
+
     while (true) {
         pid_t pid = GetPid();
         if (pid != -1) {
+            std::cout << "[+] Potential match found! PID: " << pid << ". Attempting to attach..." << std::endl;
+            
             mach_port_t task;
-            if (task_for_pid(mach_task_self(), pid, &task) == KERN_SUCCESS) {
-                // FIXED: Using mach_vm_address_t and mach_vm_size_t for compatibility
+            kern_return_t kr = task_for_pid(mach_task_self(), pid, &task);
+            
+            if (kr == KERN_SUCCESS) {
+                std::cout << "[+] Successfully attached to Task Port." << std::endl;
                 mach_vm_address_t addr = 0;
                 mach_vm_size_t size = 0;
                 vm_region_basic_info_data_64_t info;
@@ -79,12 +100,19 @@ int main() {
                 mach_port_t object;
                 
                 if (mach_vm_region(task, &addr, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &count, &object) == KERN_SUCCESS) {
+                    std::cout << "[+] Found Base Address: 0x" << std::hex << addr << std::dec << std::endl;
                     DumpJobs(task, (uintptr_t)addr);
                 }
-                while (GetPid() != -1) sleep(10);
+                
+                std::cout << "[*] Monitoring Roblox. Will reset if process closes." << std::endl;
+                while (GetPid() != -1) sleep(5);
+                std::cout << "[!] Process lost. Resuming search..." << std::endl;
+            } else {
+                std::cerr << "[-] Permission denied (kr: " << kr << "). Are you running with SUDO?" << std::endl;
+                sleep(3);
             }
         }
-        usleep(1000000);
+        usleep(500000); // Scan every 0.5s for faster response
     }
     return 0;
 }
