@@ -36,7 +36,6 @@ pid_t GetPid() {
     int nPids = proc_listpids(PROC_ALL_PIDS, 0, NULL, 0);
     std::vector<pid_t> pids(nPids);
     proc_listpids(PROC_ALL_PIDS, 0, pids.data(), nPids * sizeof(pid_t));
-    
     for (auto pid : pids) {
         if (pid <= 0) continue;
         char path[PROC_PIDPATHINFO_MAXSIZE];
@@ -54,12 +53,16 @@ pid_t GetPid() {
 
 void DumpJobs(mach_port_t task, uintptr_t base) {
     uintptr_t scheduler = RPM<uintptr_t>(task, base + Offsets::TaskScheduler);
-    if (!scheduler) return;
+    if (!scheduler) {
+        std::cout << "[-] TaskScheduler is NULL at 0x" << std::hex << (base + Offsets::TaskScheduler) << std::dec << std::endl;
+        return;
+    }
 
     uintptr_t v2 = RPM<uintptr_t>(task, scheduler + Offsets::JobStart);
     uintptr_t i  = RPM<uintptr_t>(task, scheduler + Offsets::JobEnd);
 
-    std::cout << "\n[+] --- TaskScheduler Scan ---" << std::endl;
+    std::cout << "[*] Starting Job Scan..." << std::endl;
+
     for (uintptr_t curr = v2; curr < i; curr += 16) {
         uintptr_t jobPtr = RPM<uintptr_t>(task, curr);
         if (!jobPtr) continue;
@@ -69,33 +72,32 @@ void DumpJobs(mach_port_t task, uintptr_t base) {
         uintptr_t nameAddr = (mask & 1) ? RPM<uintptr_t>(task, jobPtr + Offsets::JobNamePtr) : (jobPtr + Offsets::JobNameInline);
         
         if (ReadString(task, nameAddr, name, 63)) {
-            std::cout << "  [Job] " << name << " | 0x" << std::hex << jobPtr << std::dec << std::endl;
+            // Find DataModel via specific Jobs
+            if (strcmp(name, "WaitingHybrid") == 0 || strcmp(name, "Heartbeat") == 0) {
+                // Offset +456 (0x1C8) from your IDA analysis
+                uintptr_t dm = RPM<uintptr_t>(task, jobPtr + 0x1C8);
+                if (dm) {
+                    std::cout << "[+] Found DataModel (via " << name << "): 0x" << std::hex << dm << std::dec << std::endl;
+                }
+            }
         }
     }
+    std::cout << "[+] Scan complete." << std::endl;
 }
 
-// --- Main with Forced Sudo ---
 int main(int argc, char** argv) {
     if (geteuid() != 0) {
         std::cout << "[*] System: Elevating to Root..." << std::endl;
-        
         char* args[argc + 2];
         args[0] = (char*)"/usr/bin/sudo";
         args[1] = argv[0];
-        for (int i = 1; i < argc; i++) {
-            args[i + 1] = argv[i];
-        }
+        for (int i = 1; i < argc; i++) args[i + 1] = argv[i];
         args[argc + 1] = NULL;
-
         execv("/usr/bin/sudo", args);
-        
-        // If it gets here, sudo failed
-        perror("execv sudo");
         return 1;
     }
 
-    std::cout << "[*] Ghost Watcher v2.4 (Root Access Confirmed)" << std::endl;
-    std::cout << "[*] Searching for Roblox..." << std::endl;
+    std::cout << "[*] Ghost Watcher v2.5 (Verbose Output)" << std::endl;
 
     while (true) {
         pid_t pid = GetPid();
@@ -104,6 +106,8 @@ int main(int argc, char** argv) {
             
             mach_port_t task;
             if (task_for_pid(mach_task_self(), pid, &task) == KERN_SUCCESS) {
+                std::cout << "[+] Attached. Fetching Base..." << std::endl;
+                
                 mach_vm_address_t addr = 0;
                 mach_vm_size_t size = 0;
                 vm_region_basic_info_data_64_t info;
@@ -111,15 +115,23 @@ int main(int argc, char** argv) {
                 mach_port_t object;
                 
                 if (mach_vm_region(task, &addr, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &count, &object) == KERN_SUCCESS) {
-                    std::cout << "[+] Base Address: 0x" << std::hex << addr << std::dec << std::endl;
+                    std::cout << "[+] Roblox Base: 0x" << std::hex << addr << std::dec << std::endl;
+                    
+                    // Call the scan
                     DumpJobs(task, (uintptr_t)addr);
+                } else {
+                    std::cout << "[-] Failed to resolve Base Address." << std::endl;
                 }
                 
-                while (GetPid() != -1) sleep(5);
-                std::cout << "[!] Process closed. Resuming search..." << std::endl;
+                std::cout << "[*] Waiting for process exit..." << std::endl;
+                while (GetPid() != -1) sleep(10);
+                std::cout << "[!] Resetting..." << std::endl;
+            } else {
+                std::cout << "[-] Failed to get task port. Is SIP blocking me?" << std::endl;
+                sleep(2);
             }
         }
-        usleep(500000);
+        usleep(1000000);
     }
     return 0;
 }
