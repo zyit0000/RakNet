@@ -1,21 +1,24 @@
 #!/bin/bash
 
-# Define the app name and GitHub info
 APP_NAME="GhostWatcher"
 REPO_OWNER="zyit0000"
 REPO_NAME="RakNet"
 
-echo "[*] Cleaning up existing $APP_NAME..."
+echo "[*] Removing old $APP_NAME..."
 rm -f "$APP_NAME"
 
-echo "[*] Downloading latest executable from GitHub..."
-# Downloads the asset named GhostWatcher from the latest release
+echo "[*] Downloading latest build..."
 curl -L -O "https://github.com/$REPO_OWNER/$REPO_NAME/releases/latest/download/$APP_NAME"
 
 if [ -f "$APP_NAME" ]; then
-    echo "[+] Download successful."
-    chmod +x "$APP_NAME"
-    echo "[!] Run with: sudo ./$APP_NAME"
+    echo "[*] Fixing permissions and bypassing Gatekeeper..."
+    # Mark as executable
+    chmod 755 "$APP_NAME"
+    # Strip the quarantine flag so it can run with sudo
+    sudo xattr -rd com.apple.quarantine "$APP_NAME" 2>/dev/null
+    
+    echo "[+] Done. You can now run it by just typing: ./$APP_NAME"
+    ./$APP_NAME
 else
-    echo "[-] Error: Failed to download the executable."
+    echo "[-] Error: Download failed."
 fi
