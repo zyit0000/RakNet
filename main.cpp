@@ -7,21 +7,19 @@
 #include <mach-o/dyld.h>
 
 namespace Offsets {
-    // Note: If these already start with 0x10... they might not need a slide!
     inline constexpr uintptr_t ProcessNetworkPacket = 0x102D85704;
     inline constexpr uintptr_t Print                = 0x1001D54B8;
 }
 
-// Fixed Perms: Only flips exactly 1 page to prevent KERN_PROTECTION_FAILURE
-bool TrySafePatch(uintptr_t address, void* hook_func) {
+// Improved patcher with error reporting
+bool ForcePatch(uintptr_t address, void* hook_func) {
     size_t pageSize = sysconf(_SC_PAGESIZE);
     uintptr_t pageStart = address & ~(pageSize - 1);
 
-    // Verify the address isn't in 'outer space' (too high)
-    if (address > 0x7FFFFFFFFFFF) return false;
-
+    // Try to force the kernel to allow writing
     if (mprotect((void*)pageStart, pageSize, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
-        return false; // Kernel rejected the protection change
+        printf("[!] Failed to set permissions at 0x%llX\n", address);
+        return false;
     }
 
     unsigned char patch[] = { 
@@ -37,23 +35,29 @@ bool TrySafePatch(uintptr_t address, void* hook_func) {
 int64_t __fastcall hkProcessNetworkPacket(int64_t a1, int64_t a2, int64_t a3) {
     if (a2 != 0) {
         uint8_t packetId = *(uint8_t*)a2;
-        if (packetId == 0x83 || packetId == 0x85) return 0; // Desync
+        if (packetId == 0x83 || packetId == 0x85) return 0;
     }
     return 0; 
 }
 
 void* DesyncThread(void* arg) {
-    // Try BOTH with and without slide to see which one the dumper likes
     intptr_t slide = _dyld_get_image_vmaddr_slide(0);
-    
-    // 13s wait to ensure the process is fully 'unpacked' in memory
-    sleep(60);
+    printf("[+] ASLR Slide: 0x%lX\n", slide);
+
+    sleep(30); // Wait for the game to fully map segments
 
     uintptr_t target = slide + Offsets::ProcessNetworkPacket;
-    
-    if (!TrySafePatch(target, (void*)hkProcessNetworkPacket)) {
-        // If slide + offset failed, try just the offset
-        TrySafePatch(Offsets::ProcessNetworkPacket, (void*)hkProcessNetworkPacket);
+    printf("[+] Attempting patch at: 0x%llX\n", target);
+
+    if (ForcePatch(target, (void*)hkProcessNetworkPacket)) {
+        printf("[!] PATCH SUCCESSFUL!\n");
+        
+        // Try to notify in-game console
+        typedef void (*tPrint)(int type, const char* format, ...);
+        tPrint rbxPrint = (tPrint)(slide + Offsets::Print);
+        rbxPrint(1, "Desync on! (Ghost Mode)");
+    } else {
+        printf("[!] PATCH FAILED. Address likely invalid for this version.\n");
     }
 
     return nullptr;
