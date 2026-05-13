@@ -7,31 +7,32 @@
 #include <mach-o/dyld.h>
 
 namespace Offsets {
-    // Verified Offsets for version-9e55b34566734c3b
     inline constexpr uintptr_t ProcessNetworkPacket = 0x102D85704;
     inline constexpr uintptr_t Print                = 0x1001D54B8;
     inline constexpr uintptr_t GetDataModel         = 0x1040F261A;
-    
-    // Your provided rebased children offsets
     inline constexpr uintptr_t ChildrenStart        = 0x78; 
     inline constexpr uintptr_t ChildrenEnd          = 0x80;
 }
 
-// Global Print Function for Dual Output
 typedef void (*tPrint)(int type, const char* format, ...);
-tPrint rbxPrint;
+tPrint rbxPrint = nullptr;
 
+// Helper to log to both Terminal and In-Game Console
 void DualLog(int type, const char* msg) {
-    // 1. Output to Terminal (setup.sh console)
     printf("[Ghost Log] %s\n", msg);
-    
-    // 2. Output to Roblox In-Game Console
     if (rbxPrint) {
         rbxPrint(type, msg);
     }
 }
 
-// Desync Hook Logic
+// Memory verification to prevent "Expected 8, observed 0" crashes
+bool IsAddressValid(uintptr_t addr) {
+    if (addr < 0x100000000 || addr > 0x7FFFFFFFFFFF) return false;
+    // Check if the memory page is actually mapped
+    unsigned char vec;
+    return (mincore((void*)(addr & ~0xFFF), 1, &vec) == 0);
+}
+
 int64_t __fastcall hkProcessNetworkPacket(int64_t a1, int64_t a2, int64_t a3) {
     if (a2 != 0) {
         uint8_t packetId = *(uint8_t*)a2;
@@ -40,18 +41,19 @@ int64_t __fastcall hkProcessNetworkPacket(int64_t a1, int64_t a2, int64_t a3) {
     return 0; 
 }
 
-// Your Rebased Workspace Finder
 uintptr_t FindWorkspaceRebased(uintptr_t dm) {
+    if (!IsAddressValid(dm + Offsets::ChildrenStart)) return 0;
+    
     uintptr_t listStart = *(uintptr_t*)(dm + Offsets::ChildrenStart);
     uintptr_t listEnd   = *(uintptr_t*)(dm + Offsets::ChildrenEnd);
 
     for (uintptr_t current = listStart; current < listEnd; current += 8) {
+        if (!IsAddressValid(current)) continue;
         uintptr_t child = *(uintptr_t*)current;
         if (!child) continue;
 
-        // ClassName pointer at child + 0x18 for Intel Mac
         uintptr_t namePtr = *(uintptr_t*)(child + 0x18); 
-        if (namePtr && strcmp((char*)namePtr, "Workspace") == 0) {
+        if (IsAddressValid(namePtr) && strcmp((char*)namePtr, "Workspace") == 0) {
             return child;
         }
     }
@@ -59,45 +61,41 @@ uintptr_t FindWorkspaceRebased(uintptr_t dm) {
 }
 
 void* MainToolkitThread(void* arg) {
-    // 1. ASLR Slide Calculation
     intptr_t slide = _dyld_get_image_vmaddr_slide(0);
     rbxPrint = (tPrint)(slide + Offsets::Print);
 
-    DualLog(1, "Dylib Active. Waiting 13s for Game Load...");
-    sleep(13);
+    printf("[+] Ghost Desync Loaded. Waiting 30s for memory stability...\n");
+    sleep(30); // Increased sleep to prevent early-init crashes
 
-    // 2. Locate DataModel
     typedef uintptr_t (*tGetDataModel)();
     tGetDataModel rbxGetDataModel = (tGetDataModel)(slide + Offsets::GetDataModel);
+    
     uintptr_t dm = rbxGetDataModel();
-
-    if (dm) {
-        DualLog(1, "DataModel Found. Scanning Children...");
-        
-        // 3. Find Workspace with your logic
+    if (dm && IsAddressValid(dm)) {
+        DualLog(1, "DataModel Found. Finding Workspace...");
         uintptr_t ws = FindWorkspaceRebased(dm);
         if (ws) {
-            char ws_msg[64];
-            snprintf(ws_msg, sizeof(ws_msg), "Workspace Located: 0x%lx", ws);
-            DualLog(0, ws_msg);
-        } else {
-            DualLog(3, "Error: Could not find Workspace in Children List.");
+            char ws_buf[64];
+            snprintf(ws_buf, sizeof(ws_buf), "Workspace: 0x%lx", ws);
+            DualLog(0, ws_buf);
         }
     } else {
-        DualLog(3, "Error: GetDataModel returned NULL.");
+        printf("[-] Critical: DataModel address 0x%lx is invalid/null.\n", dm);
     }
 
-    // 4. Final Desync Patch
     uintptr_t netTarget = slide + Offsets::ProcessNetworkPacket;
     size_t pageSize = sysconf(_SC_PAGESIZE);
     uintptr_t pageStart = netTarget & ~(pageSize - 1);
-    mprotect((void*)pageStart, pageSize, PROT_READ | PROT_WRITE | PROT_EXEC);
 
-    unsigned char patch[] = { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    *(uintptr_t*)(&patch[6]) = (uintptr_t)hkProcessNetworkPacket;
-    memcpy((void*)netTarget, patch, sizeof(patch));
+    if (mprotect((void*)pageStart, pageSize, PROT_READ | PROT_WRITE | PROT_EXEC) == 0) {
+        unsigned char patch[] = { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+        *(uintptr_t*)(&patch[6]) = (uintptr_t)hkProcessNetworkPacket;
+        memcpy((void*)netTarget, patch, sizeof(patch));
+        DualLog(2, "Desync Patch Applied Successfully.");
+    } else {
+        printf("[-] mprotect failed. Kernel blocked the patch.\n");
+    }
 
-    DualLog(2, "Desync On! Physics Filtered.");
     return nullptr;
 }
 
