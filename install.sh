@@ -1,6 +1,6 @@
 #!/bin/bash
 
-REPO="ZYiT0/YourRepoName"
+REPO="zyit0000/RakNet"
 DYLIB_NAME="GhostDesync.dylib"
 TARGET_DIR="/Applications/Roblox.app/Contents/MacOS"
 
