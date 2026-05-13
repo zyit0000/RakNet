@@ -48,7 +48,7 @@ void* DesyncThread(void* arg) {
     tPrint rbxPrint = (tPrint)(slide + Offsets::Print);
 
     // 3. Wait for 13 seconds to allow you to spawn in-game
-    sleep(13);
+    sleep(30);
 
     // 4. Apply the Hook to the real shifted address
     uintptr_t target = slide + Offsets::ProcessNetworkPacket;
