@@ -74,28 +74,27 @@ void DumpJobs(mach_port_t task, uintptr_t base) {
     }
 }
 
-// --- Main with Self-Elevation ---
+// --- Main with Forced Sudo ---
 int main(int argc, char** argv) {
-    // Check if we are already root
     if (geteuid() != 0) {
-        std::cout << "[*] Requesting elevated permissions..." << std::endl;
+        std::cout << "[*] System: Elevating to Root..." << std::endl;
         
-        // Prepare to re-run with sudo
-        std::vector<const char*> args;
-        args.push_back("sudo");
-        args.push_back(argv[0]); // The path to this current executable
-        for (int i = 1; i < argc; i++) args.push_back(argv[i]);
-        args.push_back(nullptr);
+        char* args[argc + 2];
+        args[0] = (char*)"/usr/bin/sudo";
+        args[1] = argv[0];
+        for (int i = 1; i < argc; i++) {
+            args[i + 1] = argv[i];
+        }
+        args[argc + 1] = NULL;
 
-        // Execute sudo GhostWatcher
-        execvp("sudo", const_cast<char**>(args.data()));
+        execv("/usr/bin/sudo", args);
         
-        // If execvp returns, it failed
-        std::cerr << "[-] Failed to elevate. Please run manually with 'sudo ./GhostWatcher'" << std::endl;
+        // If it gets here, sudo failed
+        perror("execv sudo");
         return 1;
     }
 
-    std::cout << "[*] Ghost Watcher v2.3 (Auto-Sudo Enabled)" << std::endl;
+    std::cout << "[*] Ghost Watcher v2.4 (Root Access Confirmed)" << std::endl;
     std::cout << "[*] Searching for Roblox..." << std::endl;
 
     while (true) {
