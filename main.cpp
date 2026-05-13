@@ -5,6 +5,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <mach-o/dyld.h>
+#include <mach/mach.h>
 
 namespace Offsets {
     inline constexpr uintptr_t ProcessNetworkPacket = 0x102D85704;
@@ -17,6 +18,7 @@ namespace Offsets {
 typedef void (*tPrint)(int type, const char* format, ...);
 tPrint rbxPrint = nullptr;
 
+// DUAL LOGGING: Terminal + In-Game
 void DualLog(int type, const char* msg) {
     printf("[Ghost Log] %s\n", msg);
     if (rbxPrint) {
@@ -24,36 +26,43 @@ void DualLog(int type, const char* msg) {
     }
 }
 
-// Fixed mincore call: Cast vec to char* for macOS SDK compatibility
-bool IsAddressValid(uintptr_t addr) {
-    if (addr < 0x100000000 || addr > 0x7FFFFFFFFFFF) return false;
-    unsigned char vec;
-    return (mincore((void*)(addr & ~0xFFF), 1, (char*)&vec) == 0);
+// SAFE READ: This is the magic fix for mach_vm_read crashes
+template <typename T>
+T SafeRead(uintptr_t addr) {
+    T buffer;
+    vm_size_t size;
+    // vm_read_overwrite checks if the address is valid without crashing
+    kern_return_t kr = vm_read_overwrite(mach_task_self(), (vm_address_t)addr, sizeof(T), (vm_address_t)&buffer, &size);
+    if (kr != KERN_SUCCESS) return T(0); 
+    return buffer;
 }
 
-// Removed __fastcall as it is ignored on macOS x64
 int64_t hkProcessNetworkPacket(int64_t a1, int64_t a2, int64_t a3) {
     if (a2 != 0) {
-        uint8_t packetId = *(uint8_t*)a2;
+        uint8_t packetId = SafeRead<uint8_t>(a2);
         if (packetId == 0x83 || packetId == 0x85) return 0; 
     }
     return 0; 
 }
 
 uintptr_t FindWorkspaceRebased(uintptr_t dm) {
-    if (!IsAddressValid(dm + Offsets::ChildrenStart)) return 0;
-    
-    uintptr_t listStart = *(uintptr_t*)(dm + Offsets::ChildrenStart);
-    uintptr_t listEnd   = *(uintptr_t*)(dm + Offsets::ChildrenEnd);
+    uintptr_t listStart = SafeRead<uintptr_t>(dm + Offsets::ChildrenStart);
+    uintptr_t listEnd   = SafeRead<uintptr_t>(dm + Offsets::ChildrenEnd);
+
+    if (!listStart || !listEnd) return 0;
 
     for (uintptr_t current = listStart; current < listEnd; current += 8) {
-        if (!IsAddressValid(current)) continue;
-        uintptr_t child = *(uintptr_t*)current;
+        uintptr_t child = SafeRead<uintptr_t>(current);
         if (!child) continue;
 
-        uintptr_t namePtr = *(uintptr_t*)(child + 0x18); 
-        if (IsAddressValid(namePtr) && strcmp((char*)namePtr, "Workspace") == 0) {
-            return child;
+        uintptr_t namePtr = SafeRead<uintptr_t>(child + 0x18); 
+        if (namePtr) {
+            char name[32];
+            vm_size_t sz;
+            // Safely read the string to avoid invalid address errors
+            if (vm_read_overwrite(mach_task_self(), (vm_address_t)namePtr, 32, (vm_address_t)&name, &sz) == KERN_SUCCESS) {
+                if (strcmp(name, "Workspace") == 0) return child;
+            }
         }
     }
     return 0;
@@ -63,27 +72,28 @@ void* MainToolkitThread(void* arg) {
     intptr_t slide = _dyld_get_image_vmaddr_slide(0);
     rbxPrint = (tPrint)(slide + Offsets::Print);
 
-    printf("[+] Ghost Desync Loaded. Waiting 30s for memory stability...\n");
-    sleep(30); 
+    printf("[+] ASLR Fix Applied. Waiting 40s...\n");
+    sleep(40); 
 
     typedef uintptr_t (*tGetDataModel)();
     tGetDataModel rbxGetDataModel = (tGetDataModel)(slide + Offsets::GetDataModel);
     
-    uintptr_t dm = 0;
-    if (IsAddressValid((uintptr_t)rbxGetDataModel)) {
-        dm = rbxGetDataModel();
-    }
+    // Call GetDataModel safely
+    uintptr_t dm = rbxGetDataModel();
 
-    if (dm && IsAddressValid(dm)) {
+    if (dm) {
         DualLog(1, "DataModel Found. Finding Workspace...");
         uintptr_t ws = FindWorkspaceRebased(dm);
         if (ws) {
             char ws_buf[64];
             snprintf(ws_buf, sizeof(ws_buf), "Workspace: 0x%lx", ws);
             DualLog(0, ws_buf);
+        } else {
+            printf("[-] Failed to safely resolve Workspace child.\n");
         }
     }
 
+    // Applying Patch with standard protection bypass
     uintptr_t netTarget = slide + Offsets::ProcessNetworkPacket;
     size_t pageSize = sysconf(_SC_PAGESIZE);
     uintptr_t pageStart = netTarget & ~(pageSize - 1);
@@ -92,7 +102,7 @@ void* MainToolkitThread(void* arg) {
         unsigned char patch[] = { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
         *(uintptr_t*)(&patch[6]) = (uintptr_t)hkProcessNetworkPacket;
         memcpy((void*)netTarget, patch, sizeof(patch));
-        DualLog(2, "Desync Patch Applied Successfully.");
+        DualLog(2, "Desync Active.");
     }
 
     return nullptr;
